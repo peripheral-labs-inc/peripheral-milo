@@ -24,11 +24,8 @@ import uuid
 from tqdm import tqdm
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams, read_config
-try:
-    import wandb
-    WANDB_FOUND = True
-except ImportError:
-    WANDB_FOUND = False
+import wandb
+WANDB_FOUND = True
 
 import numpy as np
 import time
@@ -65,7 +62,7 @@ def training(
         learn_occupancy=args.mesh_regularization,
         use_appearance_network=args.decoupled_appearance,
     )
-    scene = Scene(dataset, gaussians, resolution_scales=[1,2])
+    scene = Scene(dataset, gaussians, resolution_scales=[1])
     gaussians.training_setup(opt)
     print(f"[INFO] Using 3D Mip Filter: {gaussians.use_mip_filter}")
     print(f"[INFO] Using learnable SDF: {gaussians.learn_occupancy}")
@@ -78,7 +75,13 @@ def training(
             if first_iter > mesh_config["start_iter"]:
                 mesh_config["start_iter"] = first_iter + 1
     
-    bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
+    # Set background color
+    if opt.random_background:
+        # Generate a random RGB color for the background
+        bg_color = np.random.rand(3).tolist()
+        print(f"[INFO] Using random background color: {bg_color}")
+    else:
+        bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
     # Initialize culling stats
@@ -214,12 +217,22 @@ def training(
             render_pkg["visibility_filter"], render_pkg["radii"]
         )
         gt_image = viewpoint_cam.original_image.cuda()
+       
+        mask = viewpoint_cam.mask.to('cuda').float()
+        
+        assert(list(mask.unique()) == [0, 1])
+        # print(mask.unique())
+        gt_image_modified = viewpoint_cam.original_image.clone()
+        gt_image_modified = gt_image_modified * mask
+        gt_image_modified[:, (gt_image_modified == 0).all(dim=0)] = background.unsqueeze(1)
+        gt_image = gt_image_modified.cuda()
 
         # Rendering loss
         if args.decoupled_appearance:
             Ll1 = L1_loss_appearance(image, gt_image, gaussians, viewpoint_cam.uid)
         else:
             Ll1 = l1_loss(image, gt_image)
+
         ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim_value)
         
@@ -307,7 +320,7 @@ def training(
             mesh_render_pkg = mesh_regularization_pkg["mesh_render_pkg"]
             
             loss = loss + mesh_loss
-        
+        print(loss)
         # ---Backward pass---
         loss.backward()
 
@@ -454,10 +467,7 @@ def training(
                 (iteration == args.warn_until_iter)
                 or (iteration % args.update_mip_filter_every == 0)
             ):
-                if iteration < opt.iterations - args.update_mip_filter_every:
-                    gaussians.compute_3D_filter(cameras=scene.getTrainCameras_warn_up(iteration, args.warn_until_iter, scale=1.0, scale2=2.0).copy())
-                else:
-                    print(f"[INFO] Skipping 3D Mip Filter update at iteration {iteration}")
+                gaussians.compute_3D_filter(cameras=scene.getTrainCameras_warn_up(iteration, args.warn_until_iter, scale=1.0, scale2=2.0).copy())
 
             # ---Optimizer step---
             if iteration < opt.iterations:
@@ -504,12 +514,10 @@ def prepare_output_and_logger(dataset, args):
     WANDB_FOUND = (
         WANDB_FOUND
         and (args.wandb_project is not None)
-        and (args.wandb_entity is not None)
     )
     if WANDB_FOUND:
         run = wandb.init(
             project=args.wandb_project,
-            entity=args.wandb_entity,
             config=args,
         )
     else:
@@ -608,6 +616,7 @@ if __name__ == "__main__":
         depth_order_config_file = os.path.join(BASE_DIR, "configs", "depth_order", f"{args.depth_order_config}.yaml")
         with open(depth_order_config_file, "r") as f:
             depth_order_config = yaml.safe_load(f)
+        print(f"[INFO] Using depth order regularization with config: {args.depth_order_config}")
     else:
         depth_order_config = None
         

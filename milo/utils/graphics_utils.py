@@ -48,7 +48,8 @@ def getWorld2View2(R, t, translate=np.array([.0, .0, .0]), scale=1.0):
     Rt = np.linalg.inv(C2W)
     return np.float32(Rt)
 
-def getProjectionMatrix(znear, zfar, fovX, fovY):
+def getProjectionMatrix(znear, zfar, fovX, fovY, cx_ratio, cy_ratio):
+
     tanHalfFovY = math.tan((fovY / 2))
     tanHalfFovX = math.tan((fovX / 2))
 
@@ -56,18 +57,36 @@ def getProjectionMatrix(znear, zfar, fovX, fovY):
     bottom = -top
     right = tanHalfFovX * znear
     left = -right
-
-    P = torch.zeros(4, 4)
-
     z_sign = 1.0
+    if cx_ratio is not None and cy_ratio is not None:
+        P = torch.zeros(4, 4)
 
-    P[0, 0] = 2.0 * znear / (right - left)
-    P[1, 1] = 2.0 * znear / (top - bottom)
-    P[0, 2] = (right + left) / (right - left)
-    P[1, 2] = (top + bottom) / (top - bottom)
-    P[3, 2] = z_sign
-    P[2, 2] = z_sign * zfar / (zfar - znear)
-    P[2, 3] = -(zfar * znear) / (zfar - znear)
+        # Modification to enable non-centered principal point from: https://github.com/hyzhou404/HUGS/blob/main/utils/graphics_utils.py
+        P[0, 0] = 2.0 * znear / (right - left)
+        P[1, 1] = 2.0 * znear / (top - bottom)
+        P[0, 2] = (right + left) / (right - left) - 1 + cx_ratio
+        P[1, 2] = (top + bottom) / (top - bottom) - 1 + cy_ratio
+        P[3, 2] = z_sign
+        P[2, 2] = z_sign * (zfar + znear) / (zfar - znear)
+        P[2, 3] = -(2 * zfar * znear) / (zfar - znear)
+    else:
+        P = torch.zeros(4, 4)
+        P[0, 0] = 2.0 * znear / (right - left)
+        P[1, 1] = 2.0 * znear / (top - bottom)
+        P[0, 2] = (right + left) / (right - left)
+        P[1, 2] = (top + bottom) / (top - bottom)
+        P[3, 2] = z_sign
+        P[2, 2] = z_sign * zfar / (zfar - znear)
+        P[2, 3] = -(zfar * znear) / (zfar - znear)
+
+    # Original projection matrix assumes principal point at the center of image
+    # P[0, 0] = 2.0 * znear / (right - left)
+    # P[1, 1] = 2.0 * znear / (top - bottom)
+    # P[0, 2] = (right + left) / (right - left)
+    # P[1, 2] = (top + bottom) / (top - bottom)
+    # P[3, 2] = z_sign
+    # P[2, 2] = z_sign * zfar / (zfar - znear)
+    # P[2, 3] = -(zfar * znear) / (zfar - znear)
     return P
 
 def fov2focal(fov, pixels):

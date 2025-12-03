@@ -22,7 +22,8 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
-
+import pdb
+import cv2
 class CameraInfo(NamedTuple):
     uid: int
     R: np.array
@@ -34,6 +35,13 @@ class CameraInfo(NamedTuple):
     image_name: str
     width: int
     height: int
+    mask: np.array
+    cx_ratio: float
+    cy_ratio: float
+    cx: float
+    cy: float
+    fx: float
+    fy: float
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -78,6 +86,58 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
         height = intr.height
         width = intr.width
 
+        image_path = os.path.join(images_folder, os.path.basename(extr.name))
+        image_name = os.path.basename(image_path).split(".")[0]
+        image = Image.open(image_path)
+
+        obj_mask_folder = images_folder.replace("images","masks")
+        gt_obj_mask_image = None
+
+        if os.path.isdir(obj_mask_folder):
+            mask_file = os.path.join(obj_mask_folder, f"{image_name}.png")
+            if os.path.isfile(mask_file):
+                # Read mask using cv2 to handle RGB values
+                mask_img = cv2.imread(mask_file, cv2.IMREAD_COLOR)
+                mask_img = cv2.cvtColor(mask_img, cv2.COLOR_BGR2RGB)
+
+                # Clean up mask: identify valid and invalid pixels
+                black_pixels = np.all(mask_img == [0, 0, 0], axis=2)
+                occlusion_pixels = np.all(mask_img == [127, 127, 127], axis=2)
+                foreground_pixels = np.all(mask_img == [255, 255, 255], axis=2)
+                valid_pixels = black_pixels | occlusion_pixels | foreground_pixels
+                
+                # For invalid pixels, set based on their intensity (assuming same value across channels)
+                if not np.all(valid_pixels):
+                    invalid_mask = ~valid_pixels
+                    # Use first channel since all channels have same value
+                    pixel_intensity = mask_img[invalid_mask, 0]
+                    
+                    # Set invalid pixels to 0,0,0 if intensity < 127, else 255,255,255
+                    mask_img[invalid_mask] = np.where(pixel_intensity[:, np.newaxis] < 127, 
+                                                     [0, 0, 0], 
+                                                     [255, 255, 255])
+
+                # Create masks for different pixel values
+                # 0,0,0 pixels (background)
+                #black_mask = np.all(mask_img == [0, 0, 0], axis=2)
+                # 127,127,127 pixels (occlusion)
+                occlusion_mask = np.all(mask_img == [127, 127, 127], axis=2)
+                # 255,255,255 pixels (foreground)
+                white_mask = np.all(mask_img == [255, 255, 255], axis=2)
+                
+                # Create foreground mask (single channel) from 255,255,255 pixels, but black out 127,127,127 pixels
+                gt_obj_mask_image = np.zeros((mask_img.shape[0], mask_img.shape[1]), dtype=np.uint8)
+                gt_obj_mask_image[white_mask] = 255
+                # Explicitly set occlusion pixels to 0 (black out)
+                gt_obj_mask_image[occlusion_mask] = 0
+
+            else:
+                gt_obj_mask_image = None
+
+        else:
+            print(f"Warning: Mask file not found at {obj_mask_folder}")
+            gt_obj_mask_image = None
+
         uid = intr.id
         R = np.transpose(qvec2rotmat(extr.qvec))
         T = np.array(extr.tvec)
@@ -86,20 +146,28 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder):
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
+            principal_point_x = int(intr.params[1])  # cx
+            principal_point_y = int(intr.params[2])  # cy
         elif intr.model=="PINHOLE":
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
+            principal_point_x = int(intr.params[2])
+            principal_point_y = int(intr.params[3])
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
-        image_path = os.path.join(images_folder, os.path.basename(extr.name))
-        image_name = os.path.basename(image_path).split(".")[0]
-        image = Image.open(image_path)
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
-                              image_path=image_path, image_name=image_name, width=width, height=height)
+        cx_ratio=2*principal_point_x/width
+        cy_ratio=2*principal_point_y/height
+
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,  
+                              image_path=image_path, image_name=image_name, 
+                              width=width, height=height, mask=gt_obj_mask_image, 
+                              cx_ratio=cx_ratio, cy_ratio=cy_ratio, 
+                              cx = principal_point_x, cy = principal_point_y,
+                              fx = focal_length_x, fy = focal_length_y)
         cam_infos.append(cam_info)
     sys.stdout.write('\n')
     return cam_infos
@@ -141,6 +209,7 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
         cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
+
     reading_dir = "images" if images == None else images
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
@@ -158,7 +227,11 @@ def readColmapSceneInfo(path, images, eval, llffhold=8):
     bin_path = os.path.join(path, "sparse/0/points3D.bin")
     txt_path = os.path.join(path, "sparse/0/points3D.txt")
 
-    xyz, rgb, _ = read_points3D_binary(bin_path)
+    try: 
+        xyz, rgb, _ = read_points3D_binary(bin_path)
+    except:
+        xyz, rgb, _ = read_points3D_text(txt_path)
+
     storePly(ply_path, xyz, rgb)
     pcd = fetchPly(ply_path)
 

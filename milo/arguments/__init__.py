@@ -81,7 +81,7 @@ class OptimizationParams(ParamGroup):
         self.feature_lr = 0.0025
         # self.opacity_lr = 0.05
         self.opacity_lr = 0.05/2
-        self.scaling_lr = 0.005
+        self.scaling_lr = 0.0005
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
@@ -91,8 +91,8 @@ class OptimizationParams(ParamGroup):
         self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         self.random_background = False
-        self.appearance_embeddings_lr = 0.001
-        self.appearance_network_lr = 0.001
+        self.appearance_embeddings_lr = 0.0
+        self.appearance_network_lr = 0.0
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

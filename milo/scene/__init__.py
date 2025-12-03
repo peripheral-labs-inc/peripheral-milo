@@ -93,7 +93,8 @@ class Scene:
         return self.test_cameras[scale]
     
     def getTrainCameras_warn_up(self, iteration, warn_until_iter, scale=1.0, scale2=2.0):
-        if iteration<=warn_until_iter:
-            return self.train_cameras[scale2]
-        else:
-            return self.train_cameras[scale]
+        # if iteration<=warn_until_iter:
+        #     return self.train_cameras[scale2]
+        # else:
+        #     return self.train_cameras[scale]
+        return self.train_cameras[scale]
